@@ -22674,15 +22674,21 @@
 
   async function submitV2exReply(topicId, content) {
     if (IS_GZK) {
-      let xsrf = getGzkXsrfToken();
-      if (!xsrf) {
-        const res = await fetch(`/t/${topicId}`, { credentials: "same-origin" });
-        const html = await res.text();
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        xsrf = getGzkXsrfToken(doc);
-      }
+      // 每次提交前都从帖子页面获取最新的 _xsrf token，
+      // 避免使用过期 token 导致静默失败
+      const prefetchRes = await fetch(`/t/${topicId}`, { credentials: "same-origin" });
+      const prefetchHtml = await prefetchRes.text();
+      const prefetchDoc = new DOMParser().parseFromString(prefetchHtml, "text/html");
+      let xsrf = getGzkXsrfToken(prefetchDoc);
+      if (!xsrf) xsrf = getGzkXsrfToken();
       if (!xsrf) throw new Error("未能获取过早客发帖凭证，请先登录");
+      // 记录提交前的总回复数（从页面头部提取，不受分页影响）
+      const beforeTotalText = (prefetchDoc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
+      const beforeTotalMatch = beforeTotalText.match(/(\d+)\s*条回复/);
+      const beforeTotal = beforeTotalMatch ? Number(beforeTotalMatch[1]) : -1;
+
       const params = new URLSearchParams();
+      params.append("tid", String(topicId));
       params.append("content", content);
       params.append("_xsrf", xsrf);
       const postRes = await fetch(`/t/${topicId}`, {
@@ -22693,10 +22699,35 @@
         body: params.toString(),
         credentials: "same-origin"
       });
-      if (!postRes.ok && postRes.status !== 302 && postRes.status !== 200) {
+      // fetch 默认跟随重定向，最终拿到的是重定向目标（帖子页）的 200 响应
+      // 无论成功失败都可能是 200，所以必须解析响应 HTML 来验证
+      if (!postRes.ok) {
         throw new Error(`回复提交失败 (HTTP ${postRes.status})`);
       }
-      return;
+      const html = await postRes.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      // 检查页面是否为登录页（未登录导致的静默失败）
+      if (doc.querySelector("form[action*='login'], .login-form, input[name='password']")) {
+        throw new Error("回复失败：登录状态已失效，请重新登录过早客");
+      }
+      // 通过比较总回复数判断是否成功（不受分页影响）
+      if (beforeTotal >= 0) {
+        const afterTotalText = (doc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
+        const afterTotalMatch = afterTotalText.match(/(\d+)\s*条回复/);
+        const afterTotal = afterTotalMatch ? Number(afterTotalMatch[1]) : -1;
+        if (afterTotal > beforeTotal) return;
+      }
+      // 回复数未增加，再检查响应页最后一页看看回复是否在那里
+      const verifyRes = await fetch(`/t/${topicId}?p=999`, { credentials: "same-origin" });
+      if (verifyRes.ok) {
+        const verifyHtml = await verifyRes.text();
+        const verifyDoc = new DOMParser().parseFromString(verifyHtml, "text/html");
+        const verifyTotalText = (verifyDoc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
+        const verifyTotalMatch = verifyTotalText.match(/(\d+)\s*条回复/);
+        const verifyTotal = verifyTotalMatch ? Number(verifyTotalMatch[1]) : -1;
+        if (verifyTotal > beforeTotal) return;
+      }
+      throw new Error("回复可能未成功提交，请刷新页面确认");
     }
     let once = document.querySelector("#Main form input[name='once'], input[name='once']")?.value;
     if (!once) {
