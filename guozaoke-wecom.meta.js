@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         过早客 企业微信主题
 // @namespace    https://www.guozaoke.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  将过早客换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。基于 linuxdo-wecom 适配。
 // @author       Richy
 // @match        *://*.guozaoke.com/*

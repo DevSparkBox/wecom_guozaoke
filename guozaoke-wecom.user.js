@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         过早客 企业微信主题
 // @namespace    https://www.guozaoke.com/
-// @version      0.1.0
+// @version      0.1.1
 // @description  将过早客换成企业微信 5.x 桌面端风格；支持浅色/深色/跟随系统，并保留原站交互。基于 linuxdo-wecom 适配。
 // @author       Richy
 // @match        *://*.guozaoke.com/*
@@ -377,7 +377,7 @@
     if (listState.topics && listState.topics.length) {
       renderListRows();
     } else if (panel) {
-      loadList(listState.apiPath || listApiForPath(location.pathname, location.search), true);
+      loadList(currentListApiPath(), true);
     }
     refreshMaskedChatTitle();
     syncThemeControls();
@@ -483,7 +483,7 @@
       renderListRows();
     } else if (panel) {
       // 兜底：按当前路由拉一次列表再绘
-      loadList(listState.apiPath || listApiForPath(location.pathname, location.search), true);
+      loadList(currentListApiPath(), true);
     }
     syncThemeControls();
     syncRail();
@@ -1129,6 +1129,18 @@
     const apiPath = LIST_API_BY_PATH[normalized] || scopedListApiForPath(normalized) || "/latest.json";
     const query = String(search || "");
     return `${apiPath}${query.startsWith("?") ? query : ""}`;
+  }
+
+  function defaultListApiPath() {
+    if (IS_GZK) return "/";
+    if (IS_V2EX) return "/?tab=all";
+    return "/latest.json";
+  }
+
+  function currentListApiPath() {
+    if (listState.apiPath) return listState.apiPath;
+    if (typeof location !== "undefined" && isTopicPath(location.pathname)) return defaultListApiPath();
+    return listApiForPath(location.pathname, location.search);
   }
 
   /* ============================== CSS ============================== */
@@ -2935,13 +2947,20 @@
     .${ROOT_CLASS}.${LOCK_CLASS} body > .container,
     .${ROOT_CLASS}.${LOCK_CLASS} body > .footer,
     .${ROOT_CLASS}.${LOCK_CLASS} .top-navbar,
-    .${ROOT_CLASS}.${LOCK_CLASS} .footer-bg {
+    .${ROOT_CLASS}.${LOCK_CLASS} .footer-bg,
+    .${ROOT_CLASS}.${LOCK_CLASS} .topic-reply-create,
+    .${ROOT_CLASS}.${LOCK_CLASS} #checkall {
       visibility: hidden !important;
       height: 0 !important;
       overflow: hidden !important;
       margin: 0 !important;
       padding: 0 !important;
       border: 0 !important;
+    }
+    .${ROOT_CLASS}.${LOCK_CLASS} .topic-reply-create,
+    .${ROOT_CLASS}.${LOCK_CLASS} #checkall {
+      display: none !important;
+      pointer-events: none !important;
     }
 
     /* ---------- 中栏右边缘拖拽柄 ---------- */
@@ -4375,7 +4394,9 @@
     .${ROOT_CLASS}.${LOCK_CLASS} #Rightbar,
     .${ROOT_CLASS}.${LOCK_CLASS} body > nav.navbar,
     .${ROOT_CLASS}.${LOCK_CLASS} body > .container,
-    .${ROOT_CLASS}.${LOCK_CLASS} body > .footer {
+    .${ROOT_CLASS}.${LOCK_CLASS} body > .footer,
+    .${ROOT_CLASS}.${LOCK_CLASS} .topic-reply-create,
+    .${ROOT_CLASS}.${LOCK_CLASS} #checkall {
       pointer-events: none !important;
     }
     .${ROOT_CLASS}.${LOCK_CLASS} #reply-control:not(.open):not(.fullscreen):not(.edit-title) {
@@ -12881,6 +12902,47 @@
     usersById: {}
   };
 
+  const GZK_LIST_STATE_KEY = "linuxdo-wecom-gzk-list-state";
+  const GZK_REPLY_FRAME_NAME = "wecom-gzk-reply-frame";
+
+  function persistGzkListState() {
+    if (!IS_GZK) return;
+    if (!Array.isArray(listState.topics) || !listState.topics.length) return;
+    try {
+      sessionStorage.setItem(GZK_LIST_STATE_KEY, JSON.stringify({
+        apiPath: listState.apiPath,
+        loadedApiPath: listState.loadedApiPath,
+        moreUrl: listState.moreUrl,
+        v2exPage: listState.v2exPage,
+        v2exPagePath: listState.v2exPagePath,
+        v2exHasMore: listState.v2exHasMore,
+        topics: listState.topics
+      }));
+    } catch {
+      /* ignore quota */
+    }
+  }
+
+  function restoreGzkListState() {
+    if (!IS_GZK || (Array.isArray(listState.topics) && listState.topics.length)) return false;
+    try {
+      const raw = sessionStorage.getItem(GZK_LIST_STATE_KEY);
+      if (!raw) return false;
+      const saved = JSON.parse(raw);
+      if (!saved || !Array.isArray(saved.topics) || !saved.topics.length) return false;
+      listState.apiPath = saved.apiPath || listState.apiPath;
+      listState.loadedApiPath = saved.loadedApiPath || saved.apiPath || "";
+      listState.moreUrl = saved.moreUrl || null;
+      listState.v2exPage = saved.v2exPage || 0;
+      listState.v2exPagePath = saved.v2exPagePath || "";
+      listState.v2exHasMore = Boolean(saved.v2exHasMore);
+      listState.topics = saved.topics;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   const LIST_NAV_KEY = "linuxdo-wecom-list-nav"; // "1" = 展开中栏筛选
   // 内存态优先，避免 MutationObserver 回写时把展开瞬间打回去
   let listNavOpen = (() => {
@@ -16470,7 +16532,7 @@
   async function loadList(apiPath, force) {
     if (!apiPath) return;
     if (IS_V2EX) {
-      if (!force && listState.loadedApiPath === apiPath && Array.isArray(listState.topics)) {
+      if (!force && listState.loadedApiPath === apiPath && listState.topics.length) {
         syncListActive();
         return;
       }
@@ -16497,6 +16559,7 @@
             renderListRows();
             syncRail();
             listState.loadedApiPath = apiPath;
+            persistGzkListState();
             return;
           }
         }
@@ -16568,6 +16631,7 @@
         renderListRows();
         syncRail();
         listState.loadedApiPath = apiPath;
+        persistGzkListState();
       } catch (error) {
         if (requestSerial !== listState.requestSerial) return;
         console.error("[v2ex-wecom] list load failed", error);
@@ -16637,6 +16701,7 @@
         listState.moreUrl = listState.v2exHasMore ? pagination.nextPageUrl : null;
         appendListRows(fresh);
         syncRail();
+        persistGzkListState();
       } catch (error) {
         if (requestSerial === listState.requestSerial) {
           console.error("[v2ex-wecom] load more topics failed", error);
@@ -22448,6 +22513,7 @@
     if (!parsed || !parsed.posts_count || !parsed.post_stream?.posts?.length) {
       throw new Error(`未能解析主题 #${topicId} 的内容`);
     }
+    if (IS_GZK) syncGzkNativeReplyFormFromDoc(doc, topicId);
     return parsed;
   }
 
@@ -22662,72 +22728,230 @@
   }
 
   function getGzkXsrfToken(doc = document) {
-    const fromInput = doc.querySelector("input[name='_xsrf']")?.value?.trim();
-    if (fromInput) return fromInput;
+    return doc.querySelector("input[name='_xsrf']")?.value?.trim() || "";
+  }
+
+  function gzkNativeReplyForm() {
+    return document.querySelector("#checkall")?.form
+      || document.querySelector(".topic-reply-create form")
+      || document.querySelector("form input[name='tid']")?.form
+      || document.querySelector("form textarea[name='content']")?.form
+      || document.querySelector("#wecom-gzk-native-reply-holder form")
+      || null;
+  }
+
+  function bindGzkNativeReplyFormGuard(form) {
+    if (!form || form.dataset.wecomGzkGuard === "1") return;
+    form.dataset.wecomGzkGuard = "1";
+    form.addEventListener("submit", (event) => {
+      if (!document.documentElement.classList.contains(LOCK_CLASS)) return;
+      if (form.getAttribute("target") === GZK_REPLY_FRAME_NAME) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  }
+
+  function resolveGzkReplyFormAction(form, topicId) {
+    const action = (form.getAttribute("action") || "").trim();
+    if (!action || action === "/" || action === location.pathname) {
+      form.setAttribute("action", `/t/${topicId}`);
+    }
+    if (!(form.getAttribute("method") || "").trim()) {
+      form.setAttribute("method", "post");
+    }
+    return form;
+  }
+
+  function installGzkNativeReplyForm(srcForm, topicId) {
+    if (!srcForm) return null;
+    const liveForm = gzkNativeReplyForm();
+    const canReuseLive = Boolean(liveForm && !liveForm.closest("#wecom-gzk-native-reply-holder"));
+    let targetForm = liveForm;
+    if (!canReuseLive) {
+      let holder = document.getElementById("wecom-gzk-native-reply-holder");
+      if (!holder) {
+        holder = document.createElement("div");
+        holder.id = "wecom-gzk-native-reply-holder";
+        holder.setAttribute("aria-hidden", "true");
+        holder.style.cssText = "position:absolute;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;";
+        document.body.appendChild(holder);
+      }
+      holder.innerHTML = "";
+      targetForm = srcForm.cloneNode(true);
+      holder.appendChild(targetForm);
+    } else {
+      for (const name of ["tid", "_xsrf"]) {
+        const srcInput = srcForm.querySelector(`[name='${name}']`);
+        const destInput = targetForm.querySelector(`[name='${name}']`);
+        if (srcInput && destInput) destInput.value = srcInput.value;
+      }
+    }
+    const action = (srcForm.getAttribute("action") || targetForm.getAttribute("action") || "").trim();
+    targetForm.setAttribute("action", (!action || action === "/") ? `/t/${topicId}` : action);
+    targetForm.setAttribute("method", (srcForm.getAttribute("method") || targetForm.getAttribute("method") || "post").toLowerCase());
+    bindGzkNativeReplyFormGuard(targetForm);
+    return targetForm;
+  }
+
+  function syncGzkNativeReplyFormFromDoc(doc, topicId) {
+    if (!IS_GZK || !doc) return gzkNativeReplyForm();
+    const srcForm = doc.querySelector("#checkall")?.form
+      || doc.querySelector(".topic-reply-create form")
+      || doc.querySelector("form input[name='tid']")?.form
+      || doc.querySelector("form textarea[name='content']")?.form
+      || null;
+    if (!srcForm) return gzkNativeReplyForm();
+    return installGzkNativeReplyForm(srcForm, topicId);
+  }
+
+  function prepareGzkNativeReplyForm(topicId, content) {
+    const form = gzkNativeReplyForm();
+    if (!form) throw new Error("找不到原站回复表单，请刷新话题后重试");
+    const textarea = form.querySelector("textarea[name='content']");
+    if (!textarea) throw new Error("找不到原站回复输入框");
+    const tidInput = form.querySelector("input[name='tid']");
+    if (tidInput && topicId) tidInput.value = String(topicId);
+    textarea.value = content;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    resolveGzkReplyFormAction(form, topicId);
+    bindGzkNativeReplyFormGuard(form);
+    return { form };
+  }
+
+  async function ensureGzkNativeReplyForm(topicId) {
+    let form = gzkNativeReplyForm();
+    const textarea = form?.querySelector("textarea[name='content']");
+    const xsrf = form?.querySelector("input[name='_xsrf']")?.value?.trim();
+    const tid = form?.querySelector("input[name='tid']")?.value?.trim();
+    const tidOk = !tid || String(tid) === String(topicId);
+    if (form && textarea && xsrf && tidOk) {
+      resolveGzkReplyFormAction(form, topicId);
+      bindGzkNativeReplyFormGuard(form);
+      return form;
+    }
+    const resp = await fetch(`/t/${topicId}`, { credentials: "same-origin", cache: "no-cache" });
+    if (!resp.ok) throw new Error(`无法打开原站回复表单 (HTTP ${resp.status})`);
+    const html = await resp.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    form = syncGzkNativeReplyFormFromDoc(doc, topicId);
+    if (!form) throw new Error("找不到原站回复表单，请刷新话题后重试");
+    return form;
+  }
+
+  function gzkReplyFrame() {
+    let iframe = document.querySelector(`iframe[name="${GZK_REPLY_FRAME_NAME}"]`);
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.name = GZK_REPLY_FRAME_NAME;
+      iframe.setAttribute("name", GZK_REPLY_FRAME_NAME);
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.style.cssText = "position:absolute;width:0;height:0;border:0;visibility:hidden;";
+      document.body.appendChild(iframe);
+    }
+    return iframe;
+  }
+
+  function readGzkReplyFrameDoc(iframe) {
     try {
-      const match = String(document.cookie || "").match(/(?:^|; )_xsrf=([^;]+)/);
-      return match ? decodeURIComponent(match[1]) : "";
+      return iframe.contentDocument || iframe.contentWindow?.document || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function gzkReplyFrameHref(iframe) {
+    try {
+      return String(iframe.contentWindow?.location?.href || "");
     } catch {
       return "";
     }
   }
 
+  function assertGzkReplySuccess(doc, href) {
+    const path = (() => {
+      try { return new URL(href, location.origin).pathname; } catch { return ""; }
+    })();
+    if (/\/(login|signin|register)\b/i.test(path) || doc?.querySelector("form[action*='login'], form[action*='signin']")) {
+      throw new Error("回复提交失败，请先登录过早客");
+    }
+    const alertText = (doc?.querySelector(".alert-danger, .alert-error, .flash-error, .message")?.textContent || "").replace(/\s+/g, " ").trim();
+    if (/登录|凭证|xsrf|csrf|forbidden|禁止/i.test(alertText)) {
+      throw new Error(alertText);
+    }
+    if (doc && !doc.querySelector(".topic-detail, .reply-item, .topic-reply-create")) {
+      const bodyText = (doc.body?.innerText || "").replace(/\s+/g, " ").trim();
+      if (/登录|凭证|xsrf|csrf|forbidden|禁止/i.test(bodyText)) {
+        throw new Error(bodyText.slice(0, 80) || "回复提交失败");
+      }
+    }
+  }
+
+  function submitGzkFormInHiddenFrame(form, topicId) {
+    return new Promise((resolve, reject) => {
+      const iframe = gzkReplyFrame();
+      const previousTarget = form.getAttribute("target");
+      let settled = false;
+      let timer = 0;
+      const finish = (error, doc) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        iframe.removeEventListener("load", onLoad);
+        if (previousTarget == null) form.removeAttribute("target");
+        else form.setAttribute("target", previousTarget);
+        if (error) reject(error);
+        else resolve(doc || null);
+      };
+      const onLoad = () => {
+        const href = gzkReplyFrameHref(iframe);
+        if (!href || href === "about:blank") return;
+        const doc = readGzkReplyFrameDoc(iframe);
+        try {
+          assertGzkReplySuccess(doc, href);
+          finish(null, doc);
+        } catch (error) {
+          finish(error);
+        }
+      };
+      timer = window.setTimeout(() => finish(new Error("回复提交超时，请稍后重试")), 20000);
+      iframe.addEventListener("load", onLoad);
+      resolveGzkReplyFormAction(form, topicId);
+      form.setAttribute("target", GZK_REPLY_FRAME_NAME);
+      form.submit();
+    });
+  }
+
+  function gzkReplyTotalFromDoc(doc) {
+    const text = (doc?.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
+    const match = text.match(/(\d+)\s*条回复/);
+    return match ? Number(match[1]) : -1;
+  }
+
+  async function submitGzkNativeReply(topicId, content) {
+    const beforeTotal = gzkReplyTotalFromDoc(document);
+    await ensureGzkNativeReplyForm(topicId);
+    const { form } = prepareGzkNativeReplyForm(topicId, content);
+    const doc = await submitGzkFormInHiddenFrame(form, topicId);
+    if (doc?.querySelector("form[action*='login'], .login-form, input[name='password']")) {
+      throw new Error("回复失败：登录状态已失效，请重新登录过早客");
+    }
+    const afterTotal = gzkReplyTotalFromDoc(doc);
+    if (beforeTotal >= 0 && afterTotal > beforeTotal) return;
+    const verifyRes = await fetch(`/t/${topicId}?p=999`, { credentials: "same-origin" });
+    if (verifyRes.ok) {
+      const verifyHtml = await verifyRes.text();
+      const verifyDoc = new DOMParser().parseFromString(verifyHtml, "text/html");
+      if (beforeTotal >= 0 && gzkReplyTotalFromDoc(verifyDoc) > beforeTotal) return;
+    }
+    if (doc?.querySelector(".topic-detail, .reply-item, .topic-reply-create") && afterTotal < 0) return;
+    throw new Error("回复可能未成功提交，请刷新页面确认");
+  }
+
   async function submitV2exReply(topicId, content) {
     if (IS_GZK) {
-      // 每次提交前都从帖子页面获取最新的 _xsrf token，
-      // 避免使用过期 token 导致静默失败
-      const prefetchRes = await fetch(`/t/${topicId}`, { credentials: "same-origin" });
-      const prefetchHtml = await prefetchRes.text();
-      const prefetchDoc = new DOMParser().parseFromString(prefetchHtml, "text/html");
-      let xsrf = getGzkXsrfToken(prefetchDoc);
-      if (!xsrf) xsrf = getGzkXsrfToken();
-      if (!xsrf) throw new Error("未能获取过早客发帖凭证，请先登录");
-      // 记录提交前的总回复数（从页面头部提取，不受分页影响）
-      const beforeTotalText = (prefetchDoc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
-      const beforeTotalMatch = beforeTotalText.match(/(\d+)\s*条回复/);
-      const beforeTotal = beforeTotalMatch ? Number(beforeTotalMatch[1]) : -1;
-
-      const params = new URLSearchParams();
-      params.append("tid", String(topicId));
-      params.append("content", content);
-      params.append("_xsrf", xsrf);
-      const postRes = await fetch(`/t/${topicId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: params.toString(),
-        credentials: "same-origin"
-      });
-      // fetch 默认跟随重定向，最终拿到的是重定向目标（帖子页）的 200 响应
-      // 无论成功失败都可能是 200，所以必须解析响应 HTML 来验证
-      if (!postRes.ok) {
-        throw new Error(`回复提交失败 (HTTP ${postRes.status})`);
-      }
-      const html = await postRes.text();
-      const doc = new DOMParser().parseFromString(html, "text/html");
-      // 检查页面是否为登录页（未登录导致的静默失败）
-      if (doc.querySelector("form[action*='login'], .login-form, input[name='password']")) {
-        throw new Error("回复失败：登录状态已失效，请重新登录过早客");
-      }
-      // 通过比较总回复数判断是否成功（不受分页影响）
-      if (beforeTotal >= 0) {
-        const afterTotalText = (doc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
-        const afterTotalMatch = afterTotalText.match(/(\d+)\s*条回复/);
-        const afterTotal = afterTotalMatch ? Number(afterTotalMatch[1]) : -1;
-        if (afterTotal > beforeTotal) return;
-      }
-      // 回复数未增加，再检查响应页最后一页看看回复是否在那里
-      const verifyRes = await fetch(`/t/${topicId}?p=999`, { credentials: "same-origin" });
-      if (verifyRes.ok) {
-        const verifyHtml = await verifyRes.text();
-        const verifyDoc = new DOMParser().parseFromString(verifyHtml, "text/html");
-        const verifyTotalText = (verifyDoc.querySelector(".topic-reply .ui-header")?.textContent || "").replace(/\s+/g, " ");
-        const verifyTotalMatch = verifyTotalText.match(/(\d+)\s*条回复/);
-        const verifyTotal = verifyTotalMatch ? Number(verifyTotalMatch[1]) : -1;
-        if (verifyTotal > beforeTotal) return;
-      }
-      throw new Error("回复可能未成功提交，请刷新页面确认");
+      await submitGzkNativeReply(topicId, content);
+      return;
     }
     let once = document.querySelector("#Main form input[name='once'], input[name='once']")?.value;
     if (!once) {
@@ -24397,10 +24621,12 @@
 
     if (isTopic) {
       // 进帖子：保留当前会话列表，只更新选中态 + 加载右栏
+      if (!listState.topics.length) restoreGzkListState();
       if (listState.topics.length && listState.apiPath) {
+        renderListRows();
         syncListActive();
       } else {
-        loadList(listState.apiPath || (IS_V2EX ? "/?tab=all" : "/latest.json"), false);
+        loadList(listState.apiPath || defaultListApiPath(), false);
       }
       const targetTopicId = topicIdFromPath(pathname);
       if (targetTopicId) {

@@ -11,7 +11,7 @@
 - 上游仓库：https://github.com/samsamsue/wecom_v2linuxdo
 - 当前适配站点：[过早客 / guozaoke.com](https://www.guozaoke.com/)
 - 上游作者：**Richy**
-- 当前版本：**0.1.0**
+- 当前版本：**0.1.1**
 - 用户脚本：[`guozaoke-wecom.user.js`](guozaoke-wecom.user.js)
 - 脚本元数据：[`guozaoke-wecom.meta.js`](guozaoke-wecom.meta.js)
 - 许可证：MIT
